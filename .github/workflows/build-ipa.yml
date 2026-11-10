@@ -7,6 +7,11 @@ concurrency:
   group: ipa-${{ github.ref }}
   cancel-in-progress: true
 
+# GITHUB_TOKEN defaults to read-only on this repo: the release publish
+# step needs contents: write to create the release and upload assets.
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-26
