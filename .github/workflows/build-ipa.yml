@@ -1,0 +1,63 @@
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 16
+        run: |
+          ls /Applications | grep -i "Xcode" || true
+          sudo xcode-select -s /Applications/Xcode_16.0.app 2>/dev/null \
+            || sudo xcode-select -s /Applications/Xcode_16.app 2>/dev/null \
+            || true
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Resolve Swift packages
+        run: |
+          xcodebuild -project STV.xcodeproj -scheme STV \
+            -resolvePackageDependencies
+
+      - name: Build (Release, unsigned, device)
+        run: |
+          xcodebuild -project STV.xcodeproj -scheme STV \
+            -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath DerivedDataRelease \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" build
+
+      - name: Package unsigned IPA
+        run: |
+          VER=$(awk -F'"' '/MARKETING_VERSION/{print $2; exit}' project.yml)
+          BUILD=$(awk -F'"' '/CURRENT_PROJECT_VERSION/{print $2; exit}' project.yml)
+          STAGE=$(mktemp -d)
+          mkdir -p "$STAGE/Payload"
+          cp -R DerivedDataRelease/Build/Products/Release-iphoneos/STV.app "$STAGE/Payload/"
+          mkdir -p dist
+          (cd "$STAGE" && zip -qry "$GITHUB_WORKSPACE/dist/STV-${VER}-${BUILD}-unsigned.ipa" Payload)
+          rm -rf "$STAGE"
+          echo "VER=$VER" >> "$GITHUB_ENV"
+          ls -lh dist/
+          shasum -a 256 dist/*.ipa | tee dist/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: STV-ipa
+          path: |
+            dist/*.ipa
+            dist/SHA256SUMS.txt
+          retention-days: 30
