@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, macos-15-intel]
+        os: [macos-15, macos-26]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     steps:
@@ -22,12 +22,13 @@ jobs:
           df -h /
           ls /Applications | grep -i xcode || true
 
-      - name: Select Xcode
+      # AetherEngine 7.62.0 uses iOS 26 SDK APIs (VTFrameProcessor /
+      # VTLowLatencySuperResolutionScaler), so Xcode 16 cannot compile it.
+      - name: Select newest Xcode (26+)
         run: |
-          if [ -d /Applications/Xcode_16.4.app ]; then
-            SEL=/Applications/Xcode_16.4.app
-          else
-            SEL=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          SEL=$(ls -d /Applications/Xcode_2[6-9]*.app /Applications/Xcode_3*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$SEL" ]; then
+            echo "::error::no Xcode 26+ image found"; ls /Applications; exit 1
           fi
           echo "SELECTED=$SEL" >> "$GITHUB_ENV"
           sudo xcode-select -s "$SEL"
@@ -45,7 +46,9 @@ jobs:
         run: brew install xcodegen
 
       - name: Generate project
-        run: xcodegen generate
+        run: |
+          xcodegen generate
+          grep -n "deploymentTarget" -A2 project.yml || true
 
       - name: Resolve packages
         run: |
