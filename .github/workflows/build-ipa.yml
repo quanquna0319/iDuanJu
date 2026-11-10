@@ -2,17 +2,15 @@ name: Build unsigned IPA
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
+
+concurrency:
+  group: ipa-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-15, macos-26]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 180
+    runs-on: macos-26
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -23,25 +21,29 @@ jobs:
           ls /Applications | grep -i xcode || true
 
       # AetherEngine 7.62.0 uses iOS 26 SDK APIs (VTFrameProcessor /
-      # VTLowLatencySuperResolutionScaler), so Xcode 16 cannot compile it.
-      - name: Select newest Xcode (26+)
+      # VTLowLatencySuperResolutionScaler / AVAudioConverter.contentSource),
+      # so Xcode 16 (macos-15) can never compile it. 26.3 is the version
+      # AetherEngine's own CI is green on.
+      - name: Select Xcode 26
         run: |
-          SEL=$(ls -d /Applications/Xcode_2[6-9]*.app /Applications/Xcode_3*.app 2>/dev/null | sort -V | tail -1)
-          if [ -z "$SEL" ]; then
-            echo "::error::no Xcode 26+ image found"; ls /Applications; exit 1
+          set -e
+          if [ -d /Applications/Xcode_26.3.app ]; then
+            SEL=/Applications/Xcode_26.3.app
+          elif [ -d /Applications/Xcode_26.3.0.app ]; then
+            SEL=/Applications/Xcode_26.3.0.app
+          else
+            SEL=$(ls -d /Applications/Xcode_2[6-9]*.app 2>/dev/null | sort -V | tail -1)
           fi
-          echo "SELECTED=$SEL" >> "$GITHUB_ENV"
+          [ -n "${SEL:-}" ] && [ -d "$SEL" ] || { echo "::error::no Xcode 26 image"; ls /Applications; exit 1; }
+          echo "SELECTED=$SEL"
+          echo "DEVELOPER_DIR=$SEL/Contents/Developer" >> "$GITHUB_ENV"
           sudo xcode-select -s "$SEL"
           xcodebuild -version
 
-      - name: Free disk space
-        run: |
-          for app in /Applications/Xcode*.app; do
-            if [ "$app" != "$SELECTED" ]; then echo "removing $app"; sudo rm -rf "$app" || true; fi
-          done
-          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/* 2>/dev/null || true
-          df -h /
-
+      # Do NOT delete the other Xcodes: on the macos-26 image the versioned
+      # bundle is a symlink target of Xcode.app, and deleting it leaves
+      # xcode-select pointing at a CommandLineTools instance. 128 GiB free
+      # is plenty for this build.
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -49,11 +51,13 @@ jobs:
         run: |
           xcodegen generate
           grep -n "deploymentTarget" -A2 project.yml || true
+          xcodebuild -version
 
       - name: Resolve packages
         run: |
           set -o pipefail
-          xcodebuild -project STV.xcodeproj -scheme STV -resolvePackageDependencies 2>&1 | tail -40
+          xcodebuild -project STV.xcodeproj -scheme STV \
+            -resolvePackageDependencies 2>&1 | tail -40
           df -h /
 
       - name: Build (Release / unsigned / device)
@@ -65,7 +69,7 @@ jobs:
             -derivedDataPath DerivedDataRelease \
             -skipPackagePluginValidation -skipMacroValidation \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            build 2>&1 | tee build.log | tail -300
+            build 2>&1 | tee build.log | tail -250
 
       - name: Package unsigned IPA
         run: |
@@ -80,15 +84,30 @@ jobs:
           mkdir -p dist
           (cd "$STAGE" && zip -qry "$GITHUB_WORKSPACE/dist/STV-${VER}-${BUILD}-unsigned.ipa" Payload)
           rm -rf "$STAGE"
-          du -sh dist/*
+          du -sh dist/*.ipa
           shasum -a 256 dist/*.ipa | tee dist/SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: STV-ipa-${{ matrix.os }}
+          name: STV-ipa
           path: |
             dist/*.ipa
             dist/SHA256SUMS.txt
             build.log
           retention-days: 30
+
+      - name: Publish release
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VER=$(awk -F'"' '/MARKETING_VERSION/{print $2; exit}' project.yml)
+          BUILD=$(awk -F'"' '/CURRENT_PROJECT_VERSION/{print $2; exit}' project.yml)
+          TAG="v${VER}-${BUILD}-unsigned"
+          NOTES="i短剧 iDuanJu ${VER} (${BUILD}) 未签名 IPA。用 AltStore / Sideloadly 自行签名安装。"
+          gh release create "$TAG" dist/*.ipa dist/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --title "i短剧 ${VER} (${BUILD}) unsigned IPA" \
+            --notes "$NOTES" \
+            || gh release upload "$TAG" dist/*.ipa dist/SHA256SUMS.txt --clobber --repo "$GITHUB_REPOSITORY"
