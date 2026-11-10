@@ -206,8 +206,16 @@ struct XVProvider: SiteProvider {
     static func parseDetail(_ h: String, series s: HGSeries, url: String) -> HGSeriesDetail {
         let title = call("setVideoTitle", h).nonEmptyOr(s.title)
         let cover = call("setThumbUrl169", h).nonEmptyOr(HTML.ogImage(h)).nonEmptyOr(s.cover)
-        let dur = HTML.groups("\"duration\"\\s*:\\s*\"PT(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?\"", h)
-            .map { (Int($0[1]) ?? 0) * 3600 + (Int($0[2]) ?? 0) * 60 + (Int($0[3]) ?? 0) } ?? s.duration
+        let durMatch = HTML.groups("\"duration\"\\s*:\\s*\"PT(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?\"", h)
+        let dur: Int
+        if let g = durMatch, g.count > 3 {
+            let hh: Int = Int(g[1]) ?? 0
+            let mm: Int = Int(g[2]) ?? 0
+            let ss: Int = Int(g[3]) ?? 0
+            dur = hh * 3600 + mm * 60 + ss
+        } else {
+            dur = s.duration
+        }
         let tags = HTML.all("<a[^>]*class=\"[^\"]*is-keyword[^\"]*\"[^>]*>([^<]+)</a>", h).map { HTML.cleanText($0[1]) }
         return HGSeriesDetail(source: s.source, seriesId: s.seriesId, title: title, cover: cover, desc: s.author.map { "上传者 \($0)" } ?? "",
                               author: s.author, actors: [], onlineTime: 0, totalEps: 1,
