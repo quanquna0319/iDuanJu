@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-15]
+        os: [macos-15, macos-15-intel]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     steps:
@@ -22,18 +22,27 @@ jobs:
           df -h /
           ls /Applications | grep -i xcode || true
 
-      - name: Select newest Xcode
+      - name: Select Xcode
         run: |
-          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          if [ -d /Applications/Xcode_16.4.app ]; then
+            SEL=/Applications/Xcode_16.4.app
+          else
+            SEL=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          fi
+          echo "SELECTED=$SEL" >> "$GITHUB_ENV"
+          sudo xcode-select -s "$SEL"
           xcodebuild -version
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
 
       - name: Free disk space
         run: |
-          sudo rm -rf /Users/runner/Library/Developer/CoreSimulator/Caches/* 2>/dev/null || true
+          for app in /Applications/Xcode*.app; do
+            if [ "$app" != "$SELECTED" ]; then echo "removing $app"; sudo rm -rf "$app" || true; fi
+          done
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/* 2>/dev/null || true
           df -h /
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
 
       - name: Generate project
         run: xcodegen generate
@@ -41,7 +50,8 @@ jobs:
       - name: Resolve packages
         run: |
           set -o pipefail
-          xcodebuild -project STV.xcodeproj -scheme STV -resolvePackageDependencies 2>&1 | tail -50
+          xcodebuild -project STV.xcodeproj -scheme STV -resolvePackageDependencies 2>&1 | tail -40
+          df -h /
 
       - name: Build (Release / unsigned / device)
         run: |
